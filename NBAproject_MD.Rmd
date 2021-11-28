@@ -1,0 +1,308 @@
+---
+title: "NBA Salary Prediction"
+author: "Zefeng Cai"
+date: "5/20/2021"
+output: html_document
+---
+
+## Abstract
+
+#### The Purpose of the project is to build a model that predicts the salary for NBA player. Using Ordinary Least Square Regrssion method and theories, a multiple linear regression model is built with a range of features to predict the salary
+
+```{r}
+library(ggplot2)
+library(car)
+library(corrplot)
+library(leaps)
+library(ggcorrplot)
+```
+
+#### Read in data set
+```{r}
+train <- read.csv("NBATrain.csv")
+test <- read.csv("NBATestNoY.csv")
+```
+
+## Data Preprocessing
+#### First take a look at the training data set
+```{r}
+head(train)
+tail(train)
+```
+
+#### Check the dimension of the training data 
+```{r}
+dim(train)
+```
+
+#### Check if there is any duplicated observation, since each rows represents a unique player
+```{r}
+any(duplicated(train))
+```
+
+#### Check if there is missing value in the data set. Since this is a in-class project, the NA/NULL values have been imputed.
+
+```{r}
+sum(is.null(train))
+sum(is.na(train))
+```
+
+#### Overview of the response/target: Salary
+
+```{r}
+summary(train$Salary)
+```
+
+
+#### Show a histogram of 'Salary' to have a look at the distribution
+
+```{r}
+ggplot(train, aes(x=Salary)) + geom_histogram(bins=30, color = 1, fill='light blue') + xlab("Salary") + ylab("Frequency") + ggtitle("Histrogram of Salary")
+```
+
+#### Take a look at the features names
+```{r}
+colnames(train)
+```
+
+#### Construct correlation matrix using numeric feature
+
+```{r}
+correlate <- round(cor(train[unlist(sapply(train, class)) != 'character'], use = "pairwise.complete.obs"), 4)
+sort(correlate[,"Salary"][abs(correlate[,"Salary"]) > 0.4], decreasing = TRUE)
+```
+
+#### From the output above we can see there are 10 numeric features that have an absolute correlation with 'Salary'; By Referencing the documentation, 'WS', 'OWS', 'DWS' are all measurement of win shares, while 'OWS' and 'DWS' specifically refer to 'Offensive win share' and 'Defensive win share'. Hence, the more general and more correlated 'WS' will be used first, and 'OWS'/'DWS' will be used as needed in the latter section. Similarly, 'FT' is 'Free throw made' and 'FTA' is 'Free throw attampted', the one with higher correlation will be used first. 
+
+#### Correlation heatmap is generated to investigate the correlation between features used above in order to reveal multicollinearity
+```{r}
+num_relate <- round(cor(train[,c('VORP', 'WS','GS', 'MP', 'FT', 'PTS', 'FG')], use = "pairwise.complete.obs"),4)
+ggcorrplot(num_relate)
+```
+
+#### As the heatmap show, there may be collinearity between 'VORP' and 'WS' also between 'FG' and 'PTS'
+
+## First attempt
+
+#### Using only the 7 numeric features to build the first model
+```{r}
+m1 <- lm(Salary ~ WS + VORP + GS + MP + FT + PTS + FG, data = train)
+summary(m1)
+```
+
+```{r}
+vif(m1)
+```
+#### Using Variance inflation factor, we can confirm the collinearity between 'WS'/'VORP' and 'PTS'/'FG'. Given 'WS' higher P-value, it may not be used in the next model. 
+
+#### As the output shown above, although most of the features have relatively high correlation with Salary, nearly half of them are statistically insignificant. However, since the NBA statisics are measured through out the career of the players, the data may misrepresents a player's competence given one is in different stage of his career than others. Hence, some statistics are divided by 'G' which refer to games played and 'Age' will be also taken into the next model as it reflects an approximate stage a player's in. 
+
+```{r}
+train$minPerGame <- train$MP / train$G
+
+train$ptPerGame <- train$PTS / train$G
+
+train$FgPerGame <- train$FG / train$G
+```
+
+## Categorical features
+
+#### Now we consider adding categorical feartures to the model. 
+```{r}
+which(sapply(train, class) == 'character')
+```
+
+```{r}
+table(train$NBA_Country)
+table(train$TM)
+table(train$Pos)
+table(train$T.Conf)
+table(train$T.Div)
+```
+
+
+#### First we categorized NBA_Country into two category, either USA or Non-USA as majority of players are from USA
+```{r}
+train$US_Country <- ifelse(train$NBA_Country == "USA", "USA", "Non_USA")
+```
+
+#### Then we categorize the players' position into 3 main task.
+```{r}
+train$goal <- ifelse(((train$Pos == "SG") | (train$Pos == "SF")), "Score", ifelse(((train$Pos == "C") | (train$Pos == "PF")), "Defence", "Middle"))
+```
+
+```{r}
+ggplot(train, aes(x=AST, y = Salary, group = goal, color = goal)) + geom_point(alpha = 0.3, position = position_jitter()) + stat_smooth(method = "lm")
+```
+
+```{r}
+ggplot(train, aes(x=BLK, y = Salary, group = goal, color = goal)) + geom_point(alpha = 0.3, position = position_jitter()) + stat_smooth(method = "lm")
+```
+
+
+```{r}
+ggplot(train, aes(x=PTS, y = Salary, group = goal, color = goal)) + geom_point(alpha = 0.3, position = position_jitter()) + stat_smooth(method = "lm")
+```
+#### The graphs above show, Some key basketball game statistic such as 'PTS'--points, 'BLK'--blocks, 'AST'--Assist show a correlation between the player's position in the game. Such interaction between features will be taken into consideration in building model, specifically the interaction between 'AST' and position. 
+
+#### Rank the average pay between difference teams
+```{r}
+sort(tapply(train$Salary, train$TM, mean))
+```
+
+#### Using boxplot to visualize the difference between average pay across teams
+```{r}
+boxplot(Salary ~ TM, data = train, xlab="Team", ylab = "Average Pay", main = "Boxplot of average pay across teams")
+```
+
+#### From the boxplot above we can see distinct difference in pay across teams; plot the average pay in ascending order
+```{r}
+plot(sort(tapply(train$Salary, train$TM, mean)), xlab="Team", ylab = "Average Pay", main = "Average pay across teams")
+```
+
+#### As shown above, there are obvious gaps between certain level of average pay; several tiers are made accordingly. 
+```{r}
+plot(sort(tapply(train$Salary, train$TM, mean)), xlab="Team", ylab = "Average Pay", main = "Average pay across teams")
+abline(h = 13000000, lty = 2)
+abline(h = 10000000, lty = 2)
+abline(h = 8000000, lty = 2)
+abline(h = 6000000, lty = 2)
+abline(h = 4500000, lty = 2)
+```
+
+#### Rank the average pay in different tiers
+```{r}
+train$cash_reserve <- ifelse(train$TM == "OKC", "first", 
+                    ifelse(train$TM == "MEM"|train$TM == "HOU"|train$TM == "LAC", "second", 
+                    ifelse(train$TM == "MIL"|train$TM == "IND"|train$TM == "POR"|train$TM == "MIN"|
+                             train$TM == "LAL"|train$TM == "GSW"|train$TM == "SAS"|train$TM == "CLE", "third", 
+                    ifelse(train$TM == "TOT"|train$TM == "BOS"|train$TM == "NYK", "fourth", 
+                    ifelse(train$TM == "DAL"|train$TM == "DEN"|train$TM == "CHI", "sixth", "fifth")))))
+```
+
+
+## Second Attempt
+
+#### The second model building includes the transformed variable 'minPerGame'/'ptPerGame'/'FgPerGame' that better reflects the game statistics and Age as mentioned before, also the categorical variable 'cash_reserve' and interaction effect 'AST:goal' shown above. 
+
+```{r}
+m2 <- lm(Salary ~ VORP + GS + minPerGame + FT + ptPerGame + FgPerGame + Age + cash_reserve + AST:goal, data = train)
+summary(m2)
+```
+
+#### As the output shown above, 'GS' is not significant, and transformation of 'MP' and 'FG' contribute more to the model as before. Before making any conclusion, the assumption of linear regression model will be verified first.
+
+```{r}
+plot(m2)
+```
+
+#### As the diagnostic plot above shown that although there's no data point that exceeds the Cook Distance which classify them as outlier, the constant variance and normality assumption of the model is slightly violated. A numerical transformation is needed. 
+
+#### Before using PowerTransform, the 0 value in the variable needed to be imputed with adding 0.001 since the function requires strictly positive value. 
+
+```{r}
+train$FT[train$FT == 0] = 0.001
+train$FgPerGame[train$FgPerGame == 0] = 0.001
+train$GS[train$GS == 0] = 0.001
+train$ptPerGame[train$ptPerGame == 0] = 0.001
+train$minPerGame[train$minPerGame == 0] = 0.001
+```
+
+
+```{r}
+summary(powerTransform(cbind(GS, minPerGame, FT, ptPerGame, FgPerGame, Age) ~ 1, data = train))
+
+```
+
+## Third Attempt
+
+#### Using the transformed variable above:
+
+```{r}
+train$GS <- train$GS ^ 0.2
+train$minPerGame <- train$minPerGame ^ 0.84 
+train$FT <- sqrt(train$FT)
+train$ptPerGame <- train$ptPerGame ^ 0.14
+train$FgPerGame <- train$FgPerGame ^ 0.14
+train$Age <- train$Age ^ (-1)
+```
+
+
+```{r}
+m3 <- lm(Salary ~ VORP + GS + minPerGame + FT + ptPerGame + FgPerGame + Age + cash_reserve + AST:goal, data = train)
+summary(m3)
+```
+
+```{r}
+vif(m3)
+```
+
+
+#### From the above result we can see 'ptPerGame' and 'FgPerGame' became very insignificant and have a high vif score that indicates multicollinearity after the transformation, they will be left out in the next model. First, the assumptions of the linear regression model will be examinated again. 
+
+```{r}
+plot(m3)
+```
+
+#### Using backward BIC to determine if there's any variable worth taking out. 
+
+```{r}
+backm3 <- step(m3, direction = "backward", data = train, k = log(420))
+```
+
+#### As shown above, AIC score can be improved by eliminating 'GS' and 'FT'. We will build the final model using the rest of the variable in m3 without 'GS' and 'FT'. From the normality plot and Cook Distance plot we can see observation 278, 313, 163, 203 are significant outlier. They will be removed before next step. 
+
+
+```{r}
+train <- train[-c(278, 313, 163, 203),]
+```
+
+
+## Final Attempt
+
+```{r}
+m4 <- lm(Salary ~ VORP + minPerGame  + ptPerGame + FgPerGame + Age + cash_reserve + AST:goal, data = train)
+summary(m4)
+```
+
+## Test Data 
+
+#### Creating same feature and conduct transformation as done above to test data set. 
+
+```{r}
+any(duplicated(test))
+test$US_Country <- ifelse(test$NBA_Country == "USA", "USA", "Non_USA")
+test$minPerGame <- test$MP / test$G
+test$ptPerGame <- test$PTS / test$G
+test$FgPerGame <- test$FG / test$G
+
+test$goal <- ifelse(((test$Pos == "SG") | (test$Pos == "SF")), "Score", ifelse(((test$Pos == "C") | (test$Pos == "PF")), "Defence", "Middle"))
+
+test$cash_reserve <- ifelse(test$TM == "OKC", "first", 
+                    ifelse(test$TM == "MEM"|test$TM == "HOU"|test$TM == "LAC", "second", 
+                    ifelse(test$TM == "MIL"|test$TM == "IND"|test$TM == "POR"|test$TM == "MIN"|
+                             test$TM == "LAL"|test$TM == "GSW"|test$TM == "SAS"|test$TM == "CLE", "third", 
+                    ifelse(test$TM == "TOT"|test$TM == "BOS"|test$TM == "NYK", "fourth", 
+                    ifelse(test$TM == "DAL"|test$TM == "DEN"|test$TM == "CHI", "sixth", "fifth")))))
+
+test$FT[test$FT == 0] = 0.001
+test$FgPerGame[test$FgPerGame == 0] = 0.001
+test$GS[test$GS == 0] = 0.001
+test$ptPerGame[test$ptPerGame == 0] = 0.001
+test$minPerGame[test$minPerGame == 0] = 0.001
+
+train$GS <- train$GS ^ 0.2
+train$minPerGame <- train$minPerGame ^ 0.84 
+train$FT <- sqrt(train$FT)
+train$ptPerGame <- train$ptPerGame ^ 0.14
+train$FgPerGame <- train$FgPerGame ^ 0.14
+train$Age <- train$Age ^ (-1)
+```
+
+
+```{r}
+result <- as.matrix(predict(m4, newdata = test))
+final <- cbind(test[,1],result)
+```
+
+#### The result is submitted to kaggle for evaluation using the salary predicted by the model. 
